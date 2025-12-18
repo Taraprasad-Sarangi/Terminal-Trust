@@ -94,23 +94,6 @@ python MFA.py
 
 ---
 
-## 📁 Files & Version Control
-
-### ✅ Commit these
-
-- `MFA.py`
-- `README.md`
-- `requirements.txt`
-- `.gitignore`
-
-### ❌ Do NOT commit
-
-- `master.key`
-- `mfa.db`
-- `venv/`
-
----
-
 ## 🧪 Testing Tips
 
 - Save backup codes during account creation
@@ -132,7 +115,3 @@ This project demonstrates:
 - Real-world cryptographic primitives
 
 ---
-
-## 📜 License
-
-This project is for educational and demonstration purposes.
