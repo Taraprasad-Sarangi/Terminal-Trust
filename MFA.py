@@ -2,24 +2,17 @@
 """
 Offline MFA CLI (Python)
 -----------------------
-Features implemented in this initial version:
-- Create account (username + password)
-- Argon2id password hashing
-- TOTP provisioning (HMAC-SHA256, 6 digits, 30s)
-- otpauth:// URI generation
-- ASCII QR code rendering in terminal
-- Offline login with TOTP verification (±1 window)
-- SQLite local database
-
-Next milestones (we'll add later):
-- Backup codes
-- Rate limiting / lockout
-- Session handling
-- Configurable master key storage
+Features:
+- Username + password login (Argon2)
+- TOTP MFA (SHA256, offline)
+- QR provisioning
+- 5 one-time backup codes
+- SQLite storage
 """
 
 import base64
 import hashlib
+import json
 import os
 import secrets
 import sqlite3
@@ -30,7 +23,7 @@ from getpass import getpass
 import pyotp
 import qrcode
 from argon2 import PasswordHasher
-from argon2.exceptions import VerifyMismatchError
+from argon2.exceptions import InvalidHashError, VerificationError, VerifyMismatchError
 from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 
 # =============================
@@ -40,9 +33,8 @@ DB_PATH = "mfa.db"
 ISSUER = "OfflineMFA"
 TOTP_DIGITS = 6
 TOTP_PERIOD = 30
+BACKUP_CODE_COUNT = 5
 
-# NOTE: For demo purposes only.
-# In a real system, store this securely (env var / OS keyring).
 MASTER_KEY_PATH = "master.key"
 
 # =============================
@@ -63,7 +55,6 @@ def load_or_create_master_key():
 
 MASTER_KEY = load_or_create_master_key()
 
-
 # =============================
 # Database
 # =============================
@@ -80,6 +71,7 @@ def init_db():
                 password_hash TEXT NOT NULL,
                 totp_secret_enc BLOB NOT NULL,
                 totp_nonce BLOB NOT NULL,
+                backup_codes_hash TEXT,
                 created_at INTEGER NOT NULL
             )
             """
@@ -95,8 +87,7 @@ def init_db():
 def encrypt_secret(secret: bytes) -> tuple[bytes, bytes]:
     aesgcm = AESGCM(MASTER_KEY)
     nonce = secrets.token_bytes(12)
-    ciphertext = aesgcm.encrypt(nonce, secret, None)
-    return ciphertext, nonce
+    return aesgcm.encrypt(nonce, secret, None), nonce
 
 
 def decrypt_secret(ciphertext: bytes, nonce: bytes) -> bytes:
@@ -105,19 +96,53 @@ def decrypt_secret(ciphertext: bytes, nonce: bytes) -> bytes:
 
 
 def generate_totp_secret() -> bytes:
-    # 32 bytes for SHA256
     return secrets.token_bytes(32)
 
 
 def base32_encode(secret: bytes) -> str:
-    return base64.b32encode(secret).decode("utf-8").replace("=", "")
+    return base64.b32encode(secret).decode().replace("=", "")
 
 
-def show_qr(otpauth_uri: str):
+def show_qr(uri: str):
     qr = qrcode.QRCode(border=1)
-    qr.add_data(otpauth_uri)
+    qr.add_data(uri)
     qr.make(fit=True)
     qr.print_ascii(invert=True)
+
+
+# =============================
+# Backup codes
+# =============================
+
+
+def generate_backup_codes():
+    codes = []
+    for _ in range(BACKUP_CODE_COUNT):
+        code = f"{secrets.token_hex(4).upper()}"
+        codes.append(code)
+    return codes
+
+
+def hash_backup_codes(codes):
+    return json.dumps([ph.hash(code) for code in codes])
+
+
+def verify_backup_code(stored_hashes, user_code):
+    if not stored_hashes:
+        return False, stored_hashes
+
+    hashes = json.loads(stored_hashes)
+    remaining = []
+
+    for h in hashes:
+        try:
+            ph.verify(h, user_code)
+            # consume this code
+            return True, json.dumps(remaining + hashes[hashes.index(h) + 1 :])
+        except (VerifyMismatchError, VerificationError, InvalidHashError):
+            remaining.append(h)
+
+    return False, json.dumps(remaining)
 
 
 # =============================
@@ -146,19 +171,29 @@ def create_account():
         digest=hashlib.sha256,
     )
 
-    otpauth_uri = totp.provisioning_uri(name=username, issuer_name=ISSUER)
+    uri = totp.provisioning_uri(name=username, issuer_name=ISSUER)
+    cipher, nonce = encrypt_secret(secret)
 
-    ciphertext, nonce = encrypt_secret(secret)
+    backup_codes = generate_backup_codes()
+    backup_hashes = hash_backup_codes(backup_codes)
 
     try:
         with sqlite3.connect(DB_PATH) as conn:
             cur = conn.cursor()
             cur.execute(
                 """
-                INSERT INTO users (username, password_hash, totp_secret_enc, totp_nonce, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO users
+                (username, password_hash, totp_secret_enc, totp_nonce, backup_codes_hash, created_at)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (username, password_hash, ciphertext, nonce, int(time.time())),
+                (
+                    username,
+                    password_hash,
+                    cipher,
+                    nonce,
+                    backup_hashes,
+                    int(time.time()),
+                ),
             )
             conn.commit()
     except sqlite3.IntegrityError:
@@ -166,13 +201,13 @@ def create_account():
         return
 
     print("\nAccount created successfully!\n")
-    print("Add this account to your authenticator app:")
-    print("-----------------------------------------")
-    print(f"Setup key (Base32): {secret_b32}")
-    print(f"Algorithm: SHA256 | Digits: {TOTP_DIGITS} | Period: {TOTP_PERIOD}s")
-    print("\nOR scan this QR code:\n")
-    show_qr(otpauth_uri)
-    print("\nIMPORTANT: Save your setup key securely. It will not be shown again.\n")
+    print("Scan this QR in Google Authenticator:\n")
+    show_qr(uri)
+
+    print("\nBackup codes (SAVE THESE NOW):")
+    for c in backup_codes:
+        print(" ", c)
+    print("\nEach code can be used ONCE.\n")
 
 
 def login():
@@ -182,7 +217,10 @@ def login():
     with sqlite3.connect(DB_PATH) as conn:
         cur = conn.cursor()
         cur.execute(
-            "SELECT password_hash, totp_secret_enc, totp_nonce FROM users WHERE username = ?",
+            """
+            SELECT password_hash, totp_secret_enc, totp_nonce, backup_codes_hash
+            FROM users WHERE username = ?
+            """,
             (username,),
         )
         row = cur.fetchone()
@@ -191,7 +229,7 @@ def login():
         print("[!] Invalid username or password")
         return
 
-    password_hash, secret_enc, nonce = row
+    password_hash, secret_enc, nonce, backup_hashes = row
 
     try:
         ph.verify(password_hash, password)
@@ -202,7 +240,7 @@ def login():
     secret = decrypt_secret(secret_enc, nonce)
     secret_b32 = base32_encode(secret)
 
-    user_code = input("Enter 6-digit code from authenticator: ").strip()
+    code = input("Enter 6-digit authenticator code: ").strip()
 
     totp = pyotp.TOTP(
         secret_b32,
@@ -211,34 +249,50 @@ def login():
         digest=hashlib.sha256,
     )
 
-    if totp.verify(user_code, valid_window=1):
-        print("\n[✓] Login successful. MFA verified.\n")
+    if totp.verify(code, valid_window=1):
+        print("\n[✓] Login successful (TOTP)\n")
+        return
+
+    print("[!] TOTP failed. Try a backup code.")
+    backup = input("Enter backup code (or press Enter to cancel): ").strip()
+    if not backup:
+        print("[!] Login failed")
+        return
+
+    ok, updated_hashes = verify_backup_code(backup_hashes, backup)
+
+    if ok:
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET backup_codes_hash = ? WHERE username = ?",
+                (updated_hashes, username),
+            )
+            conn.commit()
+        print("\n[✓] Login successful (backup code used)\n")
     else:
-        print("[!] Invalid authentication code")
+        print("[!] Invalid backup code")
 
 
 # =============================
-# Main menu
+# Main
 # =============================
 
 
 def main():
     init_db()
-
     while True:
         print("\n=== Offline MFA CLI ===")
         print("1) Create account")
         print("2) Login")
         print("3) Exit")
 
-        choice = input("> ").strip()
-
-        if choice == "1":
+        c = input("> ").strip()
+        if c == "1":
             create_account()
-        elif choice == "2":
+        elif c == "2":
             login()
-        elif choice == "3":
-            print("Goodbye!")
+        elif c == "3":
             sys.exit(0)
         else:
             print("Invalid choice")
