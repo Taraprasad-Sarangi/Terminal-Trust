@@ -1,0 +1,11 @@
+# Python
+__pycache__/
+*.pyc
+venv/
+
+# Secrets & data
+master.key
+mfa.db
+
+# OS
+.DS_Store

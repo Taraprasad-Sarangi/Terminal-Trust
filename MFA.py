@@ -1,12 +1,14 @@
 #!/usr/bin/env python3
 """
-Offline MFA CLI (Python)
------------------------
+Offline MFA CLI (Python) — Hardened
+----------------------------------
 Features:
 - Username + password login (Argon2)
 - TOTP MFA (SHA256, offline)
 - QR provisioning
 - 5 one-time backup codes
+- Rate limiting
+- Temporary lockout with countdown
 - SQLite storage
 """
 
@@ -31,9 +33,14 @@ from cryptography.hazmat.primitives.ciphers.aead import AESGCM
 # =============================
 DB_PATH = "mfa.db"
 ISSUER = "OfflineMFA"
+
 TOTP_DIGITS = 6
 TOTP_PERIOD = 30
 BACKUP_CODE_COUNT = 5
+
+MAX_PASSWORD_ATTEMPTS = 5
+MAX_MFA_ATTEMPTS = 5
+LOCKOUT_SECONDS = 60  # demo-friendly
 
 MASTER_KEY_PATH = "master.key"
 
@@ -72,6 +79,9 @@ def init_db():
                 totp_secret_enc BLOB NOT NULL,
                 totp_nonce BLOB NOT NULL,
                 backup_codes_hash TEXT,
+                failed_password_attempts INTEGER DEFAULT 0,
+                failed_mfa_attempts INTEGER DEFAULT 0,
+                locked_until INTEGER DEFAULT 0,
                 created_at INTEGER NOT NULL
             )
             """
@@ -80,26 +90,26 @@ def init_db():
 
 
 # =============================
-# Utility functions
+# Utility helpers
 # =============================
 
 
-def encrypt_secret(secret: bytes) -> tuple[bytes, bytes]:
+def encrypt_secret(secret: bytes):
     aesgcm = AESGCM(MASTER_KEY)
     nonce = secrets.token_bytes(12)
     return aesgcm.encrypt(nonce, secret, None), nonce
 
 
-def decrypt_secret(ciphertext: bytes, nonce: bytes) -> bytes:
+def decrypt_secret(ciphertext: bytes, nonce: bytes):
     aesgcm = AESGCM(MASTER_KEY)
     return aesgcm.decrypt(nonce, ciphertext, None)
 
 
-def generate_totp_secret() -> bytes:
+def generate_totp_secret():
     return secrets.token_bytes(32)
 
 
-def base32_encode(secret: bytes) -> str:
+def base32_encode(secret: bytes):
     return base64.b32encode(secret).decode().replace("=", "")
 
 
@@ -110,17 +120,43 @@ def show_qr(uri: str):
     qr.print_ascii(invert=True)
 
 
+def is_locked(locked_until):
+    return locked_until and time.time() < locked_until
+
+
+def lock_account(username):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET locked_until = ? WHERE username = ?",
+            (int(time.time()) + LOCKOUT_SECONDS, username),
+        )
+        conn.commit()
+
+
+def reset_counters(username):
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE users
+            SET failed_password_attempts = 0,
+                failed_mfa_attempts = 0,
+                locked_until = 0
+            WHERE username = ?
+            """,
+            (username,),
+        )
+        conn.commit()
+
+
 # =============================
 # Backup codes
 # =============================
 
 
 def generate_backup_codes():
-    codes = []
-    for _ in range(BACKUP_CODE_COUNT):
-        code = f"{secrets.token_hex(4).upper()}"
-        codes.append(code)
-    return codes
+    return [secrets.token_hex(4).upper() for _ in range(BACKUP_CODE_COUNT)]
 
 
 def hash_backup_codes(codes):
@@ -128,16 +164,12 @@ def hash_backup_codes(codes):
 
 
 def verify_backup_code(stored_hashes, user_code):
-    if not stored_hashes:
-        return False, stored_hashes
-
     hashes = json.loads(stored_hashes)
     remaining = []
 
     for h in hashes:
         try:
             ph.verify(h, user_code)
-            # consume this code
             return True, json.dumps(remaining + hashes[hashes.index(h) + 1 :])
         except (VerifyMismatchError, VerificationError, InvalidHashError):
             remaining.append(h)
@@ -160,7 +192,6 @@ def create_account():
         return
 
     password_hash = ph.hash(password)
-
     secret = generate_totp_secret()
     secret_b32 = base32_encode(secret)
 
@@ -183,7 +214,8 @@ def create_account():
             cur.execute(
                 """
                 INSERT INTO users
-                (username, password_hash, totp_secret_enc, totp_nonce, backup_codes_hash, created_at)
+                (username, password_hash, totp_secret_enc, totp_nonce,
+                 backup_codes_hash, created_at)
                 VALUES (?, ?, ?, ?, ?, ?)
                 """,
                 (
@@ -200,8 +232,8 @@ def create_account():
         print("[!] Username already exists")
         return
 
-    print("\nAccount created successfully!\n")
-    print("Scan this QR in Google Authenticator:\n")
+    print("\nAccount created successfully!")
+    print("\nScan this QR in Google Authenticator:\n")
     show_qr(uri)
 
     print("\nBackup codes (SAVE THESE NOW):")
@@ -218,7 +250,9 @@ def login():
         cur = conn.cursor()
         cur.execute(
             """
-            SELECT password_hash, totp_secret_enc, totp_nonce, backup_codes_hash
+            SELECT password_hash, totp_secret_enc, totp_nonce,
+                   backup_codes_hash, failed_password_attempts,
+                   failed_mfa_attempts, locked_until
             FROM users WHERE username = ?
             """,
             (username,),
@@ -229,19 +263,56 @@ def login():
         print("[!] Invalid username or password")
         return
 
-    password_hash, secret_enc, nonce, backup_hashes = row
+    (
+        password_hash,
+        secret_enc,
+        nonce,
+        backup_hashes,
+        pwd_fails,
+        mfa_fails,
+        locked_until,
+    ) = row
 
+    # Lockout check
+    if is_locked(locked_until):
+        remaining = int(locked_until - time.time())
+        print(f"[!] Account locked. Try again in {remaining} seconds.")
+        return
+
+    # Password check
     try:
         ph.verify(password_hash, password)
     except VerifyMismatchError:
-        print("[!] Invalid username or password")
+        pwd_fails += 1
+        with sqlite3.connect(DB_PATH) as conn:
+            cur = conn.cursor()
+            cur.execute(
+                "UPDATE users SET failed_password_attempts = ? WHERE username = ?",
+                (pwd_fails, username),
+            )
+            conn.commit()
+
+        if pwd_fails >= MAX_PASSWORD_ATTEMPTS:
+            lock_account(username)
+            print("[!] Too many failed attempts. Account locked.")
+        else:
+            print("[!] Invalid username or password")
         return
 
+    # Reset password failures
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET failed_password_attempts = 0 WHERE username = ?",
+            (username,),
+        )
+        conn.commit()
+
+    # MFA
     secret = decrypt_secret(secret_enc, nonce)
     secret_b32 = base32_encode(secret)
 
     code = input("Enter 6-digit authenticator code: ").strip()
-
     totp = pyotp.TOTP(
         secret_b32,
         digits=TOTP_DIGITS,
@@ -250,28 +321,45 @@ def login():
     )
 
     if totp.verify(code, valid_window=1):
+        reset_counters(username)
         print("\n[✓] Login successful (TOTP)\n")
         return
 
     print("[!] TOTP failed. Try a backup code.")
     backup = input("Enter backup code (or press Enter to cancel): ").strip()
-    if not backup:
-        print("[!] Login failed")
-        return
 
-    ok, updated_hashes = verify_backup_code(backup_hashes, backup)
+    ok = False
+    if backup:
+        ok, updated_hashes = verify_backup_code(backup_hashes, backup)
+        if ok:
+            with sqlite3.connect(DB_PATH) as conn:
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE users SET backup_codes_hash = ? WHERE username = ?",
+                    (updated_hashes, username),
+                )
+                conn.commit()
 
     if ok:
-        with sqlite3.connect(DB_PATH) as conn:
-            cur = conn.cursor()
-            cur.execute(
-                "UPDATE users SET backup_codes_hash = ? WHERE username = ?",
-                (updated_hashes, username),
-            )
-            conn.commit()
+        reset_counters(username)
         print("\n[✓] Login successful (backup code used)\n")
+        return
+
+    # MFA failed
+    mfa_fails += 1
+    with sqlite3.connect(DB_PATH) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE users SET failed_mfa_attempts = ? WHERE username = ?",
+            (mfa_fails, username),
+        )
+        conn.commit()
+
+    if mfa_fails >= MAX_MFA_ATTEMPTS:
+        lock_account(username)
+        print("[!] Too many MFA failures. Account locked.")
     else:
-        print("[!] Invalid backup code")
+        print("[!] Invalid authentication attempt")
 
 
 # =============================
