@@ -125,7 +125,7 @@ python MFA.py
 ## 📁 File Structure
 
 ```
-offline-mfa-cli/
+MFA/
 ├── MFA.py                  # Main application logic
 ├── README.md               # Project documentation
 ├── requirements.txt        # Python dependencies
