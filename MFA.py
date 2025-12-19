@@ -1,17 +1,3 @@
-#!/usr/bin/env python3
-"""
-Offline MFA CLI (Python) — Hardened
-----------------------------------
-Features:
-- Username + password login (Argon2)
-- TOTP MFA (SHA256, offline)
-- QR provisioning
-- 5 one-time backup codes
-- Rate limiting
-- Temporary lockout with countdown
-- SQLite storage
-"""
-
 import base64
 import hashlib
 import json

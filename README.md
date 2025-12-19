@@ -1,79 +1,109 @@
 # Offline MFA CLI (Python)
 
-A **fully offline, security-focused Multi-Factor Authentication (MFA) CLI application** implemented in Python. The project demonstrates real-world MFA concepts including **Argon2 password hashing**, **TOTP (HMAC-SHA256)**, **one-time backup codes**, **rate limiting**, and **temporary account lockout with countdown** — all without any network dependency.
+An **offline, security-focused Multi-Factor Authentication (MFA) system** implemented as a command-line application in Python. This project is designed to demonstrate how real-world MFA systems work internally, without relying on any network services or external servers.
+
+The goal of this project is not just to "add an OTP", but to correctly implement the **entire MFA lifecycle** — from credential storage and secret protection to recovery mechanisms and brute-force defense.
 
 ---
 
-## ✨ Features
+## 🧭 High-Level Flow Diagram
 
-- 🔐 **Password Authentication** using Argon2id
-- ⏱️ **TOTP-based MFA** (HMAC-SHA256, 6 digits, 30-second window)
-- 📱 **Authenticator App Support** (Google Authenticator, Authy, etc.)
-- 🧾 **QR Code Provisioning** (terminal-rendered)
-- 🆘 **One-Time Backup Codes** (hashed & single-use)
-- 🚦 **Rate Limiting** for password and MFA attempts
-- ⛔ **Temporary Account Lockout** with live countdown
-- 🔒 **Encrypted MFA Secrets at Rest** (AES-256-GCM)
-- 🗄️ **SQLite Storage** (offline, serverless)
+> ```md
+> ![MFA Flow Diagram](images/FLOW.jpg)
+> ```
 
 ---
 
-## 🧠 Architecture Overview
+## ✨ Key Features
 
-The system follows a layered, offline-first architecture:
-
-- **CLI Interface** – user interaction, prompts, QR rendering
-- **Authentication Logic** – password verification, MFA flow enforcement
-- **Cryptography Layer** – Argon2, AES-GCM, HMAC-SHA256
-- **Key Management** – local AES master key (`master.key`)
-- **Persistence Layer** – SQLite database (`mfa.db`)
-- **Out-of-Band Factor** – external authenticator app
-
-TOTP secrets are encrypted at rest, and MFA is strictly enforced _after_ password verification.
-
----
-
-## 🔄 Authentication Flow
-
-1. User enters **username + password**
-2. Password verified using **Argon2id**
-3. User prompted for **TOTP code**
-4. If TOTP fails → **backup code** option
-5. On success → counters reset and login allowed
-6. On repeated failures → **temporary lockout** with countdown
-
-Backup codes act as a fallback **only for the second factor**, never as a password replacement.
+- **Password authentication** using Argon2 (memory-hard hashing)
+- **Time-based One-Time Passwords (TOTP)** using HMAC-SHA256
+- **Authenticator app support** (Google Authenticator, Authy, etc.)
+- **QR code provisioning** directly in the terminal
+- **One-time backup / recovery codes** (securely hashed)
+- **Rate limiting** for password and MFA attempts
+- **Temporary account lockout** with a countdown timer
+- **Encrypted storage of MFA secrets** using AES-256-GCM
+- **SQLite database** for local persistence
 
 ---
 
-## 🗄️ Data Storage
+## 🧠 Design Philosophy
 
-Stored locally in SQLite:
+This project follows the same principles used in real authentication systems:
+
+- **Separation of factors**
+  Passwords authenticate _who you are_, MFA verifies _what you have_.
+
+- **Strict authentication order**
+  Backup codes are only offered _after_ successful password verification and a failed MFA attempt.
+
+- **Defense in depth**
+  Even if the database is stolen, encrypted MFA secrets and hashed credentials prevent immediate compromise.
+
+- **Fail-safe behavior**
+  Repeated failures result in temporary lockout rather than silent retries.
+
+---
+
+## 🔐 Authentication Flow (Detailed)
+
+1. User enters **username and password**
+2. Password is verified using **Argon2id**
+3. If correct, user is prompted for a **6-digit TOTP**
+4. If TOTP verification fails, a **backup code** can be used
+5. Successful authentication resets all counters
+6. Repeated failures trigger **temporary account lockout**
+
+Backup codes act as a **fallback for the second factor**, not as a replacement for the password.
+
+---
+
+## 🗄️ Data Storage Overview
+
+All data is stored locally in an SQLite database (`mfa.db`). The database contains:
 
 - Username
-- Password hash (Argon2)
+- Argon2 password hash
 - Encrypted TOTP secret
-- Hashed backup codes
-- Failed attempt counters
-- Lockout timestamp
+- Hashed backup codes (one-time use)
+- Failed password attempt counter
+- Failed MFA attempt counter
+- Lockout expiration timestamp
 
-Sensitive data is never stored in plaintext.
+No sensitive data is stored in plaintext.
 
 ---
 
 ## 🔑 Key Management (`master.key`)
 
-- A local **AES-256-GCM master key** is generated on first run
-- Used to encrypt/decrypt TOTP secrets
+To protect MFA secrets at rest, the application generates a local **AES-256-GCM master key** on first run:
+
+- Stored in `master.key`
+- Used only to encrypt/decrypt TOTP secrets
+- Generated per installation
 - **Never committed to version control**
 
-If both the database and master key are compromised, MFA security is lost — hence the strict separation.
+If the database is compromised without the master key, MFA secrets remain protected.
 
 ---
 
-## 📦 Setup & Usage
+## 🚦 Rate Limiting & Lockout
 
-### 1. Create virtual environment
+To prevent brute-force attacks:
+
+- Password attempts are limited
+- MFA attempts (TOTP + backup codes) are limited
+- After exceeding limits, the account is **temporarily locked**
+- A live countdown shows how long remains until unlock
+
+This mirrors behavior found in real authentication systems.
+
+---
+
+## 📦 Setup Instructions
+
+### 1. Create a virtual environment
 
 ```bash
 python3 -m venv venv
@@ -94,13 +124,31 @@ python MFA.py
 
 ---
 
-## 🧪 Testing Tips
+## 📁 File Structure
 
-- Save backup codes during account creation
-- Test wrong password → no MFA prompt (expected)
-- Test correct password + wrong TOTP → backup code prompt
-- Reuse backup code → rejected (one-time)
-- Trigger lockout to observe countdown
+```
+offline-mfa-cli/
+├── MFA.py                  # Main application logic
+├── README.md               # Project documentation
+├── requirements.txt        # Python dependencies
+├── .gitignore              # Git ignore rules
+├── master.key              # AES-256 master key (generated at runtime, NOT committed)
+├── mfa.db                  # SQLite database (generated at runtime, NOT committed)
+└── images/
+    └── mfa_flow_diagram.png  # MFA flow / activity diagram
+```
+
+---
+
+## 🧪 Testing the System
+
+Suggested test cases:
+
+- Wrong password → authentication stops immediately
+- Correct password + correct TOTP → login success
+- Correct password + wrong TOTP → backup code prompt
+- Reusing a backup code → rejected
+- Multiple failed attempts → temporary lockout with countdown
 
 ---
 
@@ -108,10 +156,11 @@ python MFA.py
 
 This project demonstrates:
 
-- Correct MFA lifecycle design
-- Secure secret handling at rest
-- Offline authentication systems
-- Defensive security controls
-- Real-world cryptographic primitives
+- Correct MFA system design
+- Secure password storage
+- Encrypted secret handling
+- Recovery mechanisms without weakening security
+- Rate limiting and lockout strategies
+- Offline authentication architecture
 
 ---
