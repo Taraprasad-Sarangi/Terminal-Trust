@@ -8,9 +8,7 @@ The goal of this project is not just to "add an OTP", but to correctly implement
 
 ## 🧭 High-Level Flow Diagram
 
-> ```md
 > ![MFA Flow Diagram](images/FLOW.jpg)
-> ```
 
 ---
 
