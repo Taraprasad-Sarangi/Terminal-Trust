@@ -2,7 +2,7 @@
 
 An **offline, security-focused Multi-Factor Authentication (MFA) system** implemented as a command-line application in Python. This project is designed to demonstrate how real-world MFA systems work internally, without relying on any network services or external servers.
 
-The goal of this project is not just to "add an OTP", but to correctly implement the **entire MFA lifecycle** — from credential storage and secret protection to recovery mechanisms and brute-force defense.
+The goal of this project is to correctly implement the **entire MFA lifecycle** — from credential storage and secret protection to recovery mechanisms and brute-force defense.
 
 ---
 
@@ -40,7 +40,7 @@ This project follows the same principles used in real authentication systems:
   Even if the database is stolen, encrypted MFA secrets and hashed credentials prevent immediate compromise.
 
 - **Fail-safe behavior**
-  Repeated failures result in temporary lockout rather than silent retries.
+  Repeated failures result in temporary lockout.
 
 ---
 
@@ -129,11 +129,11 @@ MFA/
 ├── MFA.py                  # Main application logic
 ├── README.md               # Project documentation
 ├── requirements.txt        # Python dependencies
-├── .gitignore              # Git ignore rules
-├── master.key              # AES-256 master key (generated at runtime, NOT committed)
-├── mfa.db                  # SQLite database (generated at runtime, NOT committed)
+├── .gitignore              # Git ignore files
+├── master.key              # AES-256 master key (generated at runtime)
+├── mfa.db                  # SQLite database (generated at runtime)
 └── images/
-    └── mfa_flow_diagram.png  # MFA flow / activity diagram
+    └── mfa_flow_diagram.png  # activity diagram
 ```
 
 ---
