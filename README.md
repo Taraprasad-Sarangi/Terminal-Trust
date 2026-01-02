@@ -6,13 +6,13 @@ The goal of this project is to correctly implement the **entire MFA lifecycle** 
 
 ---
 
-## 🧭 High-Level Flow Diagram
+## High-Level Flow Diagram
 
 > ![MFA Flow Diagram](images/FLOW.jpg)
 
 ---
 
-## ✨ Key Features
+## Key Features
 
 - **Password authentication** using Argon2 (memory-hard hashing)
 - **Time-based One-Time Passwords (TOTP)** using HMAC-SHA256
@@ -26,7 +26,7 @@ The goal of this project is to correctly implement the **entire MFA lifecycle** 
 
 ---
 
-## 🧠 Design Philosophy
+## Design Philosophy
 
 This project follows the same principles used in real authentication systems:
 
@@ -44,7 +44,7 @@ This project follows the same principles used in real authentication systems:
 
 ---
 
-## 🔐 Authentication Flow (Detailed)
+## Authentication Flow (Detailed)
 
 1. User enters **username and password**
 2. Password is verified using **Argon2id**
@@ -57,7 +57,7 @@ Backup codes act as a **fallback for the second factor**, not as a replacement f
 
 ---
 
-## 🗄️ Data Storage Overview
+## Data Storage Overview
 
 All data is stored locally in an SQLite database (`mfa.db`). The database contains:
 
@@ -73,7 +73,7 @@ No sensitive data is stored in plaintext.
 
 ---
 
-## 🔑 Key Management (`master.key`)
+## Key Management (`master.key`)
 
 To protect MFA secrets at rest, the application generates a local **AES-256-GCM master key** on first run:
 
@@ -86,7 +86,7 @@ If the database is compromised without the master key, MFA secrets remain protec
 
 ---
 
-## 🚦 Rate Limiting & Lockout
+## Rate Limiting & Lockout
 
 To prevent brute-force attacks:
 
@@ -99,7 +99,7 @@ This mirrors behavior found in real authentication systems.
 
 ---
 
-## 📦 Setup Instructions
+## Setup Instructions
 
 ### 1. Create a virtual environment
 
@@ -122,7 +122,7 @@ python MFA.py
 
 ---
 
-## 📁 File Structure
+## File Structure
 
 ```
 MFA/
@@ -138,7 +138,7 @@ MFA/
 
 ---
 
-## 🧪 Testing the System
+## Testing the System
 
 Suggested test cases:
 
@@ -150,7 +150,7 @@ Suggested test cases:
 
 ---
 
-## 🎓 Learning Outcomes
+## Learning Outcomes
 
 This project demonstrates:
 
